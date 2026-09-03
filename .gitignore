@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.vscode/
+
+# Generated data
+data/generated/
+data/*.csv
+
+# Logs
+*.log
+
+# Node
+node_modules/
+frontend/.next/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
