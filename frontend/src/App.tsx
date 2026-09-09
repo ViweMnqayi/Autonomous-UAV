@@ -151,7 +151,7 @@ interface TelemetryPoint {
 }
 
 interface EventItem {
-  id: number;
+  id: string;
   time: string;
   type: "SYSTEM" | "UAV" | "NAV" | "WARN" | "MISSION" | "AI" | "EMERGENCY";
   message: string;
@@ -164,10 +164,31 @@ interface Recording {
 }
 
 // ============================================================
-// CONSTANTS
+// CONSTANTS & UTILITIES
 // ============================================================
 
 const API = "http://127.0.0.1:8000";
+let eventIdCounter = 0;
+
+function generateEventId(): string {
+  eventIdCounter++;
+  return `event-${Date.now()}-${eventIdCounter}-${Math.random().toString(36).substr(2, 6)}`;
+}
+
+function getTime() {
+  return new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatFlightTime(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(total / 60);
+  const remaining = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
+}
 
 // ============================================================
 // APP
@@ -201,7 +222,7 @@ function App() {
   const [telemetryHistory, setTelemetryHistory] = useState<TelemetryPoint[]>([]);
 
   const [events, setEvents] = useState<EventItem[]>([
-    { id: 1, time: getTime(), type: "SYSTEM", message: "Ground Control Station initialized" },
+    { id: generateEventId(), time: getTime(), type: "SYSTEM", message: "Ground Control Station initialized" },
   ]);
 
   const [simulationPaused, setSimulationPaused] = useState(false);
@@ -225,7 +246,7 @@ function App() {
   const mapRef = useRef<HTMLDivElement>(null);
   const miniMapRef = useRef<HTMLDivElement>(null);
   const fpvCanvasRef = useRef<HTMLCanvasElement>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
+  const wheelHandlerRef = useRef<((e: WheelEvent) => void) | null>(null);
 
   // ============================================================
   // HELPERS
@@ -234,7 +255,7 @@ function App() {
   const addEvent = (type: EventItem["type"], message: string) => {
     setEvents((current) =>
       [
-        { id: Date.now(), time: getTime(), type, message },
+        { id: generateEventId(), time: getTime(), type, message },
         ...current,
       ].slice(0, 30)
     );
@@ -380,11 +401,27 @@ function App() {
     setIsDragging(false);
   };
 
-  const handleMapWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setMapZoom(prev => Math.min(Math.max(prev * delta, 0.3), 5));
-  };
+  // Wheel event handler with passive: false
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      setMapZoom(prev => Math.min(Math.max(prev * delta, 0.3), 5));
+    };
+
+    wheelHandlerRef.current = handleWheel;
+
+    const element = mapRef.current;
+    if (element) {
+      element.addEventListener('wheel', handleWheel, { passive: false });
+    }
+
+    return () => {
+      if (element && wheelHandlerRef.current) {
+        element.removeEventListener('wheel', wheelHandlerRef.current);
+      }
+    };
+  }, []);
 
   const handleMapClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isSelectingWaypoint || !mapRef.current || isDragging) return;
@@ -460,9 +497,17 @@ function App() {
 
     window.addEventListener("keydown", handleKeyboard);
     return () => window.removeEventListener("keydown", handleKeyboard);
-  }, [drone, flightMode, showFPV]);
+  }, [drone, flightMode]);
 
+  // Load recordings on mount
+  useEffect(() => {
+    listRecordings();
+  }, []);
+
+  // ============================================================
   // FPV Camera Render Loop
+  // ============================================================
+
   useEffect(() => {
     if (!showFPV || !fpvCanvasRef.current || !drone) return;
 
@@ -471,12 +516,10 @@ function App() {
     if (!ctx) return;
 
     let animationId: number;
-    let frameCount = 0;
 
     const renderFPV = () => {
       const width = canvas.width;
       const height = canvas.height;
-      frameCount++;
 
       // Clear canvas
       ctx.clearRect(0, 0, width, height);
@@ -579,7 +622,8 @@ function App() {
     ctx.fillText(`BAT ${drone.battery.toFixed(0)}%`, margin, margin + 95);
 
     // Signal quality
-    const signalColor = drone.signal?.strength || 0 > 0.6 ? '#00ff88' : drone.signal?.strength || 0 > 0.3 ? '#ffaa00' : '#ff4444';
+    const signalStrength = drone.signal?.strength || 0;
+    const signalColor = signalStrength > 0.6 ? '#00ff88' : signalStrength > 0.3 ? '#ffaa00' : '#ff4444';
     ctx.fillStyle = signalColor;
     ctx.fillText(`SIG ${drone.signal?.quality || 'Unknown'}`, margin, margin + 115);
 
@@ -600,7 +644,7 @@ function App() {
     }
   };
 
-  const drawFPVCrosshair = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+  const drawFPVCrosshair = (ctx: CanvasRenderingContext2D, width: number, height: number, drone: DroneStatus) => {
     const cx = width / 2;
     const cy = height / 2;
     const size = 20;
@@ -640,9 +684,8 @@ function App() {
     ctx.arc(cx, cy, 2, 0, Math.PI * 2);
     ctx.fill();
 
-    // Tilt indicators
+    // Tilt indicators - only roll is used for crosshair
     const tiltRoll = drone.tilt?.roll || 0;
-    const tiltPitch = drone.tilt?.pitch || 0;
     
     ctx.strokeStyle = 'rgba(0,255,255,0.3)';
     ctx.lineWidth = 1;
@@ -1076,11 +1119,6 @@ function App() {
     return (completed / waypoints.length) * 100;
   }, [waypoints]);
 
-  // Load recordings on mount
-  useEffect(() => {
-    listRecordings();
-  }, []);
-
   if (!drone) {
     return (
       <div className="loading-screen">
@@ -1103,9 +1141,6 @@ function App() {
   const altitudePercentage = drone.altitude.percentage;
   const groundScale = (1.5 - (altitudePercentage / 100) * 0.75) * mapZoom;
   const groundVerticalPosition = 55 + altitudePercentage * 0.22;
-
-  // Mini-map calculations
-  const miniMapScale = 0.3 * miniMapZoom;
 
   const isLowAltitude = drone.altitude.warning === "LOW_ALTITUDE";
   const isHighAltitude = drone.altitude.warning === "HIGH_ALTITUDE";
@@ -1295,7 +1330,6 @@ function App() {
               onMouseMove={handleMapMouseMove}
               onMouseUp={handleMapMouseUp}
               onMouseLeave={handleMapMouseUp}
-              onWheel={handleMapWheel}
               ref={mapRef}
             >
               {/* SKY - Enhanced with more clouds */}
@@ -2700,7 +2734,7 @@ function App() {
           FPV CAMERA OVERLAY
       ===================================================== */}
 
-      {showFPV && (
+      {showFPV && drone && (
         <div className={`fpv-camera ${fpvFullscreen ? 'fpv-fullscreen' : ''}`}>
           <div className="fpv-header">
             <div className="fpv-title">
@@ -2950,22 +2984,7 @@ function TelemetryGraph({ history }: { history: TelemetryPoint[] }) {
 }
 
 // ============================================================
-// UTILITIES
+// UTILITIES - Already defined at the top
 // ============================================================
-
-function getTime() {
-  return new Date().toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-function formatFlightTime(seconds: number) {
-  const total = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(total / 60);
-  const remaining = total % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
-}
 
 export default App;

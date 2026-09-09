@@ -929,3 +929,82 @@ def get_replay_frame():
             "complete": True,
             "message": "Playback complete"
         }
+    # Add these endpoints to main.py
+
+@app.get("/api/sensors/status")
+def get_sensor_status():
+    """Get simulated sensor readings"""
+    return {
+        "gps": {
+            "position": (drone.x, drone.y, drone.z),
+            "fix_quality": drone.gps.fix_quality
+        },
+        "imu": drone.imu.update(
+            (drone.acceleration_x, drone.acceleration_y, drone.acceleration_z),
+            (0, 0, 0)  # gyro readings
+        ),
+        "barometer": {
+            "altitude": drone.barometer.update(drone.z)
+        },
+        "magnetometer": {
+            "heading": drone.magnetometer.update(0)
+        }
+    }
+
+@app.post("/api/simulation/record")
+def start_recording():
+    """Start recording telemetry data to database"""
+    drone.flight_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return {
+        "success": True,
+        "flight_id": drone.flight_id,
+        "message": f"Recording started for flight {drone.flight_id}"
+    }
+
+@app.post("/api/simulation/stop-recording")
+def stop_recording():
+    """Stop recording and save flight summary"""
+    if not drone.flight_id:
+        return {"success": False, "message": "No active recording"}
+    
+    # Save flight summary
+    summary = {
+        "start_time": drone.flight_start_time or 0,
+        "end_time": time.time(),
+        "duration": drone.total_flight_time,
+        "distance": drone.distance_travelled,
+        "max_altitude": max(drone.z, 0),
+        "max_speed": drone.max_speed,
+        "avg_battery": 80,  # placeholder
+        "waypoints": 0,  # placeholder
+        "status": drone.state
+    }
+    drone.storage.save_flight_summary(drone.flight_id, summary)
+    
+    flight_id = drone.flight_id
+    drone.flight_id = None
+    
+    return {
+        "success": True,
+        "flight_id": flight_id,
+        "message": f"Recording stopped for flight {flight_id}"
+    }
+
+@app.get("/api/data/flights")
+def get_flights():
+    """Get list of all recorded flights"""
+    return {"flights": drone.storage.get_flights()}
+
+@app.get("/api/data/telemetry")
+def get_telemetry(flight_id: str, limit: int = 1000):
+    """Get telemetry data for a specific flight"""
+    return {"telemetry": drone.storage.get_telemetry(flight_id, limit)}
+
+@app.post("/api/simulation/emergency-land")
+def emergency_land():
+    """Emergency landing procedure"""
+    drone.emergency.trigger_emergency("emergency_land")
+    return {
+        "success": True,
+        "message": "Emergency landing initiated"
+    }

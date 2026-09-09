@@ -1,4 +1,5 @@
 import math
+from simulator.core.pid import PID, AltitudeController, VelocityController
 
 
 class FlightController:
@@ -21,7 +22,7 @@ class FlightController:
         # =====================================================
         # NAVIGATION
         # =====================================================
-        self.navigation_mode = "MANUAL"  # MANUAL, HOLD, LANDING, RETURN_HOME, MISSION, GEOFENCE_RECOVERY
+        self.navigation_mode = "MANUAL"  # MANUAL, HOLD, LANDING, RETURN_HOME, MISSION, GEOFENCE_RECOVERY, AUTONOMOUS
         self.target_x = None
         self.target_y = None
 
@@ -45,6 +46,36 @@ class FlightController:
         # =====================================================
         self.arrival_threshold = 0.5
 
+        # =====================================================
+        # PID CONTROLLERS (NEW)
+        # =====================================================
+        self.use_pid = True  # Toggle between PID and traditional control
+        self.altitude_pid = PID(kp=1.5, ki=0.3, kd=0.1, output_limits=(-5.0, 5.0))
+        self.velocity_pid_x = PID(kp=1.0, ki=0.1, kd=0.05, output_limits=(-2.0, 2.0))
+        self.velocity_pid_y = PID(kp=1.0, ki=0.1, kd=0.05, output_limits=(-2.0, 2.0))
+        
+        # =====================================================
+        # AUTONOMOUS MODE SETTINGS (NEW)
+        # =====================================================
+        self.autonomous_mode = False
+        self.auto_altitude_hold = True
+        self.auto_heading_hold = False
+        self.target_heading = 0.0
+        
+        # =====================================================
+        # PATH PLANNING (NEW)
+        # =====================================================
+        self.path_waypoints = []
+        self.current_path_index = 0
+        self.path_following = False
+        
+        # =====================================================
+        # OBSTACLE AVOIDANCE (NEW)
+        # =====================================================
+        self.obstacle_avoidance_enabled = True
+        self.avoidance_distance = 5.0
+        self.avoidance_angle = 45.0
+
     # =========================================================
     # ALTITUDE
     # =========================================================
@@ -52,6 +83,10 @@ class FlightController:
         altitude = max(0.0, altitude)
         altitude = min(altitude, self.drone.max_altitude)
         self.target_altitude = altitude
+        
+        # Update PID setpoint if using PID
+        if self.use_pid:
+            self.altitude_pid.setpoint = altitude
 
     # =========================================================
     # SPEED
@@ -137,6 +172,72 @@ class FlightController:
             self.target_velocity_y = 0.0
 
     # =========================================================
+    # AUTONOMOUS NAVIGATION (NEW)
+    # =========================================================
+    def set_autonomous_mode(self, enabled: bool):
+        """Enable or disable autonomous mode"""
+        self.autonomous_mode = enabled
+        if enabled:
+            self.navigation_mode = "AUTONOMOUS"
+            print("🤖 Autonomous mode enabled")
+        else:
+            self.navigation_mode = "MANUAL"
+            print("👤 Manual mode enabled")
+
+    def set_target_heading(self, heading: float):
+        """Set target heading for autonomous flight"""
+        self.target_heading = heading % 360
+        self.auto_heading_hold = True
+
+    def follow_path(self, waypoints: list):
+        """Load a path for autonomous following"""
+        self.path_waypoints = waypoints
+        self.current_path_index = 0
+        self.path_following = True
+        print(f"🛤️ Path loaded with {len(waypoints)} waypoints")
+
+    def get_current_path_target(self):
+        """Get the current path target waypoint"""
+        if not self.path_following or self.current_path_index >= len(self.path_waypoints):
+            return None
+        return self.path_waypoints[self.current_path_index]
+
+    def advance_path(self):
+        """Advance to next path waypoint"""
+        self.current_path_index += 1
+        if self.current_path_index >= len(self.path_waypoints):
+            self.path_following = False
+            print("✅ Path complete")
+            return False
+        return True
+
+    # =========================================================
+    # OBSTACLE AVOIDANCE (NEW)
+    # =========================================================
+    def check_and_avoid_obstacles(self):
+        """Check for obstacles and adjust course if needed"""
+        if not self.obstacle_avoidance_enabled:
+            return
+
+        obstacles = self.drone.detected_obstacles
+        if not obstacles:
+            return
+
+        for obstacle in obstacles:
+            if obstacle['distance'] < self.avoidance_distance:
+                # Calculate avoidance direction
+                angle_rad = math.radians(obstacle['angle'] + self.avoidance_angle)
+                avoid_x = math.cos(angle_rad) * self.target_speed
+                avoid_y = math.sin(angle_rad) * self.target_speed
+                
+                # Apply avoidance
+                self.target_velocity_x += avoid_x * 0.5
+                self.target_velocity_y += avoid_y * 0.5
+                
+                print(f"⚠️ Obstacle avoided at {obstacle['distance']:.1f}m")
+                break
+
+    # =========================================================
     # STOP HORIZONTAL MOVEMENT
     # =========================================================
     def stop_horizontal(self):
@@ -155,6 +256,11 @@ class FlightController:
         self.target_x = None
         self.target_y = None
         self.drone.velocity_z = 0.0
+        
+        # Reset PID controllers
+        self.altitude_pid.reset()
+        self.velocity_pid_x.reset()
+        self.velocity_pid_y.reset()
 
     # =========================================================
     # LANDING
@@ -164,6 +270,10 @@ class FlightController:
         self.target_velocity_x = 0.0
         self.target_velocity_y = 0.0
         self.target_altitude = 0.0
+        
+        # Set PID target
+        if self.use_pid:
+            self.altitude_pid.setpoint = 0.0
 
     # =========================================================
     # RETURN HOME
@@ -191,6 +301,11 @@ class FlightController:
         self.drone.acceleration_x = 0.0
         self.drone.acceleration_y = 0.0
         self.drone.acceleration_z = 0.0
+        
+        # Reset PID controllers
+        self.altitude_pid.reset()
+        self.velocity_pid_x.reset()
+        self.velocity_pid_y.reset()
 
     # =========================================================
     # HOLD POSITION
@@ -200,6 +315,9 @@ class FlightController:
         self.target_velocity_x = 0.0
         self.target_velocity_y = 0.0
         self.target_altitude = self.drone.z
+        
+        if self.use_pid:
+            self.altitude_pid.setpoint = self.drone.z
 
     # =========================================================
     # HORIZONTAL VELOCITY CONTROL
@@ -224,7 +342,15 @@ class FlightController:
         return max(current - maximum_change, target)
 
     # =========================================================
-    # VERTICAL VELOCITY CONTROL
+    # VERTICAL VELOCITY CONTROL (PID version)
+    # =========================================================
+    def _approach_vertical_velocity_pid(self, current, target_altitude, delta_time):
+        """Use PID controller for altitude control"""
+        self.altitude_pid.setpoint = target_altitude
+        return self.altitude_pid.update(current, delta_time)
+
+    # =========================================================
+    # VERTICAL VELOCITY CONTROL (Traditional)
     # =========================================================
     def _approach_vertical_velocity(self, current, target, delta_time):
         difference = target - current
@@ -260,7 +386,7 @@ class FlightController:
         return -desired_speed
 
     # =========================================================
-    # UPDATE CONTROLLER
+    # UPDATE CONTROLLER - COMPLETE
     # =========================================================
     def update(self, delta_time):
         # LANDED
@@ -300,10 +426,29 @@ class FlightController:
             direction = self.drone.geofence.get_safe_direction(
                 self.drone.x, self.drone.y
             )
-            # Slow down and return to center
             target_speed = min(self.target_speed * 0.5, 5.0)
             self.target_velocity_x = direction[0] * target_speed
             self.target_velocity_y = direction[1] * target_speed
+
+        # =====================================================
+        # OBSTACLE AVOIDANCE (NEW)
+        # =====================================================
+        if self.obstacle_avoidance_enabled and self.drone.state == "FLYING":
+            self.check_and_avoid_obstacles()
+
+        # =====================================================
+        # AUTONOMOUS PATH FOLLOWING (NEW)
+        # =====================================================
+        if self.path_following and self.drone.state == "FLYING":
+            target = self.get_current_path_target()
+            if target:
+                self.navigate_to(target['x'], target['y'])
+                # Check if reached target
+                dx = target['x'] - self.drone.x
+                dy = target['y'] - self.drone.y
+                distance = math.sqrt(dx**2 + dy**2)
+                if distance < self.arrival_threshold:
+                    self.advance_path()
 
         # =====================================================
         # LANDING
@@ -344,10 +489,18 @@ class FlightController:
         # =====================================================
         # VERTICAL ALTITUDE CONTROL
         # =====================================================
-        target_vertical_velocity = self._calculate_vertical_target()
-        self.drone.velocity_z = self._approach_vertical_velocity(
-            previous_velocity_z, target_vertical_velocity, delta_time
-        )
+        if self.use_pid:
+            # Use PID for smooth altitude control
+            vertical_velocity = self._approach_vertical_velocity_pid(
+                self.drone.z, self.target_altitude, delta_time
+            )
+            self.drone.velocity_z = vertical_velocity
+        else:
+            # Use traditional method
+            target_vertical_velocity = self._calculate_vertical_target()
+            self.drone.velocity_z = self._approach_vertical_velocity(
+                previous_velocity_z, target_vertical_velocity, delta_time
+            )
 
         # =====================================================
         # RETURN HOME
@@ -376,12 +529,22 @@ class FlightController:
         # =====================================================
         # SMOOTH HORIZONTAL MOVEMENT
         # =====================================================
-        self.drone.velocity_x = self._approach_velocity(
-            previous_velocity_x, self.target_velocity_x, delta_time
-        )
-        self.drone.velocity_y = self._approach_velocity(
-            previous_velocity_y, self.target_velocity_y, delta_time
-        )
+        if self.use_pid:
+            # Use PID for smooth velocity control
+            self.drone.velocity_x = self.velocity_pid_x.update(
+                self.drone.velocity_x, delta_time
+            ) + self.target_velocity_x * 0.5
+            self.drone.velocity_y = self.velocity_pid_y.update(
+                self.drone.velocity_y, delta_time
+            ) + self.target_velocity_y * 0.5
+        else:
+            # Use traditional method
+            self.drone.velocity_x = self._approach_velocity(
+                previous_velocity_x, self.target_velocity_x, delta_time
+            )
+            self.drone.velocity_y = self._approach_velocity(
+                previous_velocity_y, self.target_velocity_y, delta_time
+            )
 
         # =====================================================
         # CALCULATE ACCELERATION
@@ -394,3 +557,30 @@ class FlightController:
             self.drone.acceleration_x = 0.0
             self.drone.acceleration_y = 0.0
             self.drone.acceleration_z = 0.0
+
+    # =========================================================
+    # GET CONTROLLER STATUS (NEW)
+    # =========================================================
+    def get_status(self):
+        """Get current controller status"""
+        return {
+            "navigation_mode": self.navigation_mode,
+            "target_altitude": self.target_altitude,
+            "target_speed": self.target_speed,
+            "target_velocity_x": self.target_velocity_x,
+            "target_velocity_y": self.target_velocity_y,
+            "target_x": self.target_x,
+            "target_y": self.target_y,
+            "autonomous_mode": self.autonomous_mode,
+            "path_following": self.path_following,
+            "path_progress": f"{self.current_path_index}/{len(self.path_waypoints)}" if self.path_waypoints else "0/0",
+            "use_pid": self.use_pid,
+            "obstacle_avoidance": self.obstacle_avoidance_enabled,
+            "altitude_pid": {
+                "kp": self.altitude_pid.kp,
+                "ki": self.altitude_pid.ki,
+                "kd": self.altitude_pid.kd,
+                "integral": self.altitude_pid.integral,
+                "error": self.altitude_pid.setpoint - self.drone.z
+            }
+        }

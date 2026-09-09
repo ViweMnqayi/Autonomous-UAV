@@ -1,4 +1,4 @@
- Autonomous UAV Simulation & Ground Control System
+Autonomous UAV Simulation & Ground Control System
 
 A software-based autonomous UAV (Unmanned Aerial Vehicle) simulation project designed to model drone flight, telemetry, flight control, environmental conditions, mission execution, and ground-control operations without requiring physical drone hardware.
 
@@ -691,3 +691,4 @@ Viwe Mnqayi
 Information Technology / ICT Student
 
 This project is being developed as part of a personal software engineering, UAV simulation, and artificial intelligence portfolio.
+
